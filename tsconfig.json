@@ -1,20 +1,18 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
+    "lib": ["ESNext"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
-    "jsx": "react-jsx",
     "strict": true,
     "skipLibCheck": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "server.ts", "main.ts", "catalog.ts", "catalog.test.ts", "app.ts", "api/index.ts"]
+  "include": ["main.ts", "catalog.ts", "api/index.ts", "smoke.test.ts"]
 }
