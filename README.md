@@ -71,6 +71,30 @@ read the cart, add items, change quantities, and remove items.
 **Claude CANNOT** place orders or take payment — that happens on the merchant
 page.
 
+## Built on `@openmobilehub/credentagent-*`
+
+This demo is a **thin reference consumer** of the
+[CredentAgent](https://github.com/openmobilehub/credentagent) library. The MCP
+shopping server, the cart/order/verification stores, the checkout page, and the
+credential ceremony rails (passkey, Digital Payment Credentials / AP2) all live
+in the published packages — this repo just supplies the **catalog** and the
+**gate policy**:
+
+```ts
+const store = createStorefront({ catalog: CATALOG, reviews: REVIEWS, storage });
+const credentagent = new CredentAgent();
+credentagent.mount(store.app);
+store.gate((order) => credentagent.requirements(order, [
+  optional(membership.discount(10)),
+  required(payment.in("usd")),
+]));
+```
+
+Everything below the catalog and policy — pricing, gates, persistence — is the
+library's. See [`main.ts`](main.ts). (Previously this repo hand-rolled all of it;
+it was collapsed to a consumer in
+[#27](https://github.com/openmobilehub/mcp-apps-shopping-demo/issues/27).)
+
 ### The flow
 
 1. **Select** — open the picker and add products with the per-card stepper. Each
@@ -91,19 +115,18 @@ page.
    demoed: a **passkey** (WebAuthn / Touch ID) user-presence proof, and a
    cross-device **Digital Payment Credentials / AP2** flow where your phone's
    wallet signs the exact cart total via OpenID4VP (carried phone↔desktop over
-   FIDO caBLE) to produce an AP2 Payment Mandate — see
-   [`payment-gate/README.md`](payment-gate/README.md). Nothing is charged.
+   FIDO caBLE) to produce an AP2 Payment Mandate — the ceremony rails live in the
+   [CredentAgent gate](https://github.com/openmobilehub/credentagent). Nothing is charged.
 
 The UI and the agent share one server-side cart, so anything Claude changes is
 reflected in the picker's cart badge, and anything you add in the picker shows
 up in chat. The cart is kept in-memory locally (lost on server restart); orders
 carry no server state — they're encoded into the checkout link. The checkout
 page is a mock (no real charge), but the **Authorize payment** step on it is a
-real ceremony — passkey user-presence (see
-[`payment-gate/README.md`](payment-gate/README.md)), or the cross-device,
-amount-bound Digital Payment Credentials / AP2 variant where the wallet signs
-over the exact cart total via OpenID4VP, carried phone↔desktop over FIDO caBLE
-(see [`payment-gate/dc-payment/`](payment-gate/dc-payment/README.md)).
+real ceremony — passkey user-presence, or the cross-device, amount-bound Digital
+Payment Credentials / AP2 variant where the wallet signs over the exact cart total
+via OpenID4VP, carried phone↔desktop over FIDO caBLE. Both rails are served by the
+[CredentAgent gate](https://github.com/openmobilehub/credentagent).
 
 ## Demo
 
@@ -156,8 +179,9 @@ npm install
 npm run build
 ```
 
-This bundles the React UI into a single `dist/mcp-app.html` and compiles the
-server to `dist/`.
+This compiles the server to `dist/`. The MCP server, the checkout page, and the
+widget UI all ship inside `@openmobilehub/credentagent-storefront` — there is no
+UI bundling step in this repo anymore.
 
 ## Use in Claude Desktop
 
@@ -246,20 +270,22 @@ resets on restart); orders are stateless, encoded into the checkout link.
 ## Deploy to Vercel
 
 The server also runs on Vercel as a single serverless function, which gives you
-a stable HTTPS origin without running a tunnel. `api/index.ts` exports the same
-Express app (`createApp()`), and `vercel.json` rewrites every path to it, so one
-function serves both `/mcp` and `/checkout`.
+a stable HTTPS origin without running a tunnel. `api/index.ts` exports the express
+app the storefront builds (`store.app`), and `vercel.json` rewrites every path to
+it, so one function serves `/mcp`, the checkout page, and the `/credentagent/*`
+ceremony rails.
 
-Serverless functions don't keep module memory between invocations, so the two
-pieces of shared state are handled differently:
+Serverless functions don't keep module memory between invocations, so shared
+state is handled by the library's options in `main.ts`:
 
-- **Cart** — persisted through a `CartStore`. Locally (and in stdio mode) it's an
-  in-memory store with zero dependencies; on Vercel it uses Upstash Redis when
-  the connection env vars are present. Without Redis the cart would appear to
-  reset between requests, so Redis is required for the deployed app to behave.
-- **Orders** — stateless. The `checkout` tool encodes the order into the checkout
-  URL (base64url), so the merchant page reconstructs it from the link with no
-  store at all.
+- **Persistence** — `storage: redisStorage({ url, token })` when the Upstash env
+  vars are present, giving the cart / order / verification stores a shared
+  cross-instance backend. Without them it's the zero-config in-memory default
+  (fine locally / in stdio; the cart would appear to reset per-request on Vercel,
+  so Redis is required there).
+- **Stateless order + MCP transport** — `statelessOrders` / `statelessMcp` are on
+  under `VERCEL`, so the signed cart mandate carries the order and each request can
+  land on any instance with no session affinity.
 
 1. **Provision Upstash Redis.** From the project directory:
 
@@ -269,8 +295,8 @@ pieces of shared state are handled differently:
 
    This adds the Upstash integration and auto-syncs the connection env vars
    (`KV_REST_API_URL` / `KV_REST_API_TOKEN`, or the `UPSTASH_REDIS_REST_URL` /
-   `UPSTASH_REDIS_REST_TOKEN` pair) into the project. `selectCartStore` picks the
-   Redis store automatically when it sees them.
+   `UPSTASH_REDIS_REST_TOKEN` pair) into the project. `main.ts` passes
+   `storage: redisStorage(...)` automatically when it sees them.
 
 2. **Deploy:**
 
@@ -278,9 +304,9 @@ pieces of shared state are handled differently:
    vercel deploy --prod
    ```
 
-   Vercel runs `npm run build` (per `vercel.json`), which bundles the UI into
-   `dist/mcp-app.html` and compiles the server. The UI bundle is shipped with the
-   function via `includeFiles: dist/**`.
+   Vercel runs `npm run build` (per `vercel.json`), which compiles the server to
+   `dist/`. The library's widget bundle ships with the function via `includeFiles`
+   (`node_modules/@openmobilehub/credentagent-storefront/dist/**`).
 
 3. **No `PUBLIC_BASE_URL` needed.** The checkout link falls back to
    `VERCEL_PROJECT_PRODUCTION_URL`, which Vercel injects automatically, so the
@@ -295,60 +321,29 @@ Like the tunnel setup, this is an **authless** demo connector. The cart lives in
 Redis and is demo-global (shared across everyone hitting the deployment); orders
 carry no server state.
 
-## Preview in the browser
-
-The UI normally talks to the MCP host over a `postMessage` bridge. When opened
-directly in a browser it detects there is no host and runs in **standalone
-mode**: it loads the sample catalog locally, and "Add to cart" accumulates a
-local cart shown in the footer badge. Checkout is agent-driven and only works
-inside an MCP host, so standalone mode is for iterating on the selection UI
-itself — no Claude Desktop required.
-
-```bash
-npm run dev   # opens http://localhost:5173/mcp-app.html
-```
-
-Standalone mode triggers automatically outside an iframe; append `?standalone`
-to force it.
-
 ## Develop / inspect
 
 ```bash
-npm test                                                        # unit tests
+npm test                                                        # smoke test (gate contract)
 npx @modelcontextprotocol/inspector node dist/main.js --stdio   # inspect tools/resources
 ```
 
 ## Project layout
 
-- `server.ts` — MCP server + shared cart (read/written through `cartStore`).
-  Tools: `browse-products` (opens the UI), `add-to-cart` / `set-quantity` /
-  `remove-from-cart` / `get-cart` / `checkout` (model- and UI-callable, linked to
-  the UI so chat-driven edits route back to the open picker),
-  `get-product-details` / `get-product-reviews` (model-only info). `checkout`
-  snapshots the cart into an order and returns `{ orderId, checkoutUrl }`; it does
-  not place the order or take payment. The UI bundle is registered as two
-  resources — the MCP Apps mime for Claude and a `text/html+skybridge` resource
-  for ChatGPT — and tools carry both `ui.resourceUri` and `openai/outputTemplate`
-  meta plus tool `annotations`.
-- `cartStore.ts` — `CartStore` abstraction for the shared cart. `MemoryCartStore`
-  (in-process, zero deps) for local/stdio use; `RedisCartStore` (Upstash) for
-  serverless. `selectCartStore` picks Redis when the connection env vars are set,
-  else memory.
-- `checkout.ts` — stateless orders + the mock checkout HTML page and its HTTP
-  listener (`startCheckoutHttpServer`, default port `3030`). `createCheckoutOrder`
-  encodes the order into the checkout URL (base64url, via `encodeOrder`);
-  `checkoutResponse` decodes it (`decodeOrder`) to render the page — no order
-  store. Used by both the standalone listener and the `/checkout` route.
-- `app.ts` — `createApp()` builds the Express app serving `/mcp` and `/checkout`
-  from one origin (no `listen()`), reused by both `main.ts` and the Vercel
-  function.
-- `main.ts` — stdio (Claude Desktop) and HTTP entrypoints; calls `createApp()`
-  and listens locally, and starts the checkout listener in stdio mode
-- `api/index.ts` / `vercel.json` — Vercel serverless entrypoint (`export default
-  createApp()`) and config that rewrites all paths to the one function
-- `catalog.ts` — sample products + reviews + `priceCart` / `createOrder` /
-  `getProduct` / `getReviews` helpers
-- `src/app.tsx` — React selection UI with a footer Checkout button; one bundle
-  with runtime host detection for three modes: MCP host (Claude), ChatGPT
-  (`window.openai` bridge), and standalone browser preview
-- `mcp-app.html` / `vite.config.ts` — single-file UI bundle
+The demo is a thin consumer, so it's just the catalog, the wiring, and the deploy
+glue — everything else is `@openmobilehub/credentagent-*`:
+
+- `main.ts` — builds the storefront (`createStorefront({ catalog, reviews, storage })`),
+  mounts the ceremony rails (`credentagent.mount(store.app)`), declares the gate policy
+  (`store.gate(...)`), and runs stdio (Claude Desktop) or HTTP. Exports `app` / `store`.
+- `catalog.ts` — this demo's products + reviews (the only demo-specific data). Typed by
+  the library's `Product` / `Review`.
+- `api/index.ts` / `vercel.json` — Vercel serverless entrypoint (`export default app`)
+  and config that rewrites all paths to the one function.
+- `smoke.test.ts` — asserts the gate contract end-to-end (tools served, catalog flows,
+  checkout is payment-gated, no server-side bypass) with the zero-config in-memory stores.
+
+The MCP tools (`browse-products`, `add-to-cart`, `set-quantity`, `remove-from-cart`,
+`get-cart`, `get-product-details`, `get-product-reviews`, `checkout`, `get-order-status`),
+the widget UI, the checkout page, pricing, the stores, and the passkey / dc-payment /
+credential ceremony rails all live in the published packages.
