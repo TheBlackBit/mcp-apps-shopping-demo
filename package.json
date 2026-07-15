@@ -17,7 +17,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openmobilehub/credentagent-gate": "^0.2.0",
-    "@openmobilehub/credentagent-storefront": "^0.2.1"
+    "@openmobilehub/credentagent-storefront": "^0.2.1",
+    "@upstash/redis": "^1.34.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
