@@ -38,7 +38,22 @@ export const store = createStorefront({
   ...(publicBaseUrl ? { baseUrl: publicBaseUrl } : {}),
 });
 
-const credentagent = new CredentAgent(publicBaseUrl ? { walletOrigin: publicBaseUrl } : {});
+// The demo reader identity (openmobilehub/credentagent#51). Supplied, the gate signs each
+// OpenID4VP request as a reader named on the demo RICAL, so a wallet that imported that list
+// shows this verifier as trusted instead of "The website requesting this data is unknown".
+// Absent, the gate self-signs an ephemeral cert per request — the ceremony still completes,
+// the wallet just shows the verifier as unknown. The cert's SubjectAltName must include this
+// deployment's host, or the wallet rejects the request outright (origin binding).
+// Only the READER key belongs here: a popped gate can impersonate the demo reader, nothing more.
+const readerIdentity =
+  process.env.CREDENTAGENT_READER_KEY && process.env.CREDENTAGENT_READER_CERT
+    ? { key: process.env.CREDENTAGENT_READER_KEY, cert: process.env.CREDENTAGENT_READER_CERT }
+    : undefined;
+
+const credentagent = new CredentAgent({
+  ...(publicBaseUrl ? { walletOrigin: publicBaseUrl } : {}),
+  ...(readerIdentity ? { readerIdentity } : {}),
+});
 credentagent.mount(store.app); // wires the /credentagent/* ceremony rails onto this server
 
 // The gate policy: age only when the cart holds an age-restricted item, an optional
